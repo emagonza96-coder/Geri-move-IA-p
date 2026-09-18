@@ -1,0 +1,37 @@
+# Entorno virtual Python
+.venv/
+venv/
+env/
+
+# Modelos de MediaPipe (se descargan automáticamente al ejecutar)
+app/models/*.task
+
+# Salidas de sesiones (videos y datos grabados)
+output/
+input/
+
+# Archivos Python compilados
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Calibración estéreo (se genera en cada setup)
+calibration.json
+
+# Capturas de pantalla sueltas
+*.png
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs y temporales
+*.log
+*.tmp

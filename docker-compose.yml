@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  app:
+    build: ./app
+    # --- VOLÚMENES ---
+    # input/  → pon aquí tus videos para procesar (macOS/Windows)
+    # output/ → aquí se guardan los resultados (video + JSON)
+    volumes:
+      - ./input:/data/input
+      - ./output:/data/output
+
+    # --- MODO HEADLESS (macOS / Windows) ---
+    # Procesa un archivo de video sin ventana.
+    # Cambia "mi_video.mp4" por el nombre de tu archivo en input/
+    command: ["--source", "/data/input/mi_video.mp4", "--headless", "--output-dir", "/data/output"]
+
+    # --- MODO WEBCAM EN VIVO (solo Linux con X11) ---
+    # Descomenta las líneas de abajo y comenta el 'command' de arriba
+    # devices:
+    #   - /dev/video0:/dev/video0
+    # environment:
+    #   - DISPLAY=${DISPLAY}
+    # volumes (agregar a los existentes):
+    #   - /tmp/.X11-unix:/tmp/.X11-unix
+    # command: ["--source", "0", "--output-dir", "/data/output"]
+    # Ejecutar antes: xhost +local:docker
