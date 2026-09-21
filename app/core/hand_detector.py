@@ -182,48 +182,41 @@ class HandDetector:
             cv2.putText(frame, label, wrist_pt,
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 210, 185), 1, cv2.LINE_AA)
 
-        # Dibujar ángulos sobre las articulaciones
+        # Dibujar métricas (líneas de tensión) en la mano
         if angles and hands:
-            self._draw_hand_angles(frame, hands, angles, w, h)
+            self._draw_hand_metrics(frame, hands, angles, w, h)
 
         return frame
 
-    def _draw_hand_angles(self, frame, hands, angles, w, h):
-        """Dibuja ángulos de dedos sobre cada articulación."""
+    def _draw_hand_metrics(self, frame, hands, metrics, w, h):
+        """Dibuja líneas visuales de las métricas espaciales en la mano."""
         for hand_data in hands:
             landmarks = hand_data["landmarks"]
-            handedness = hand_data["handedness"]
-            suffix = "_der" if handedness == "Right" else "_izq"
 
-            for joint_key, data in angles.items():
-                if not joint_key.endswith(suffix):
+            for metric_key, data in metrics.items():
+                if "draw_line" not in data:
                     continue
-                if data["angle"] is None:
-                    continue
-
-                vertex_idx = data.get("vertex_idx")
-                if vertex_idx is None:
-                    continue
-
-                lm = landmarks[vertex_idx]
-                pt = (int(lm["x"] * w), int(lm["y"] * h))
-
-                status = data.get("status", "normal")
-                if status == "normal":
-                    color = (80, 230, 110)
-                elif status == "limitado":
-                    color = (60, 155, 255)
-                elif status == "excedido":
-                    color = (60, 70, 255)
-                else:
-                    color = (200, 200, 200)
-
-                angle_text = f"{data['angle']:.0f}"
-                tx, ty = pt[0] + 8, pt[1] - 5
-                cv2.rectangle(frame, (tx - 2, ty - 12), (tx + 34, ty + 3), (20, 20, 20), -1)
-                cv2.rectangle(frame, (tx - 2, ty - 12), (tx + 34, ty + 3), color, 1)
-                cv2.putText(frame, angle_text, (tx, ty),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv2.LINE_AA)
+                
+                idx_a, idx_b = data["draw_line"]
+                lm_a = landmarks[idx_a]
+                lm_b = landmarks[idx_b]
+                
+                pt_a = (int(lm_a["x"] * w), int(lm_a["y"] * h))
+                pt_b = (int(lm_b["x"] * w), int(lm_b["y"] * h))
+                
+                color = data.get("color", (0, 255, 0))
+                
+                # Dibujar línea punteada o de tensión
+                cv2.line(frame, pt_a, pt_b, color, 2, cv2.LINE_AA)
+                
+                # Etiqueta con porcentaje
+                val_text = f"{data['angle']}%"
+                mid_pt = ((pt_a[0] + pt_b[0]) // 2, (pt_a[1] + pt_b[1]) // 2)
+                
+                tx, ty = mid_pt[0] + 5, mid_pt[1] - 5
+                cv2.rectangle(frame, (tx - 2, ty - 12), (tx + 40, ty + 3), (20, 20, 20), -1)
+                cv2.rectangle(frame, (tx - 2, ty - 12), (tx + 40, ty + 3), color, 1)
+                cv2.putText(frame, val_text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
 
     def release(self):
         """Libera recursos de MediaPipe."""

@@ -50,7 +50,15 @@ def process_calibration_mode(manager: MultiCameraManager, calib_file: str):
         frame_l, frame_r = frames[0], frames[1]
         
         # Mostrar las vistas
-        combined = np.hstack((frame_l, frame_r))
+        h_l = frame_l.shape[0]
+        h_r, w_r = frame_r.shape[:2]
+        if h_l != h_r:
+            scale = h_l / h_r
+            frame_r_disp = cv2.resize(frame_r, (int(w_r * scale), h_l))
+        else:
+            frame_r_disp = frame_r
+            
+        combined = np.hstack((frame_l, frame_r_disp))
         cv2.putText(combined, f"Pares capturados: {len(calibrator.objpoints)}", (20, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         
@@ -142,12 +150,13 @@ def main():
             cv2.putText(frame_r, "Camara Der", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             
         # Unir visualmente ambas cámaras
-        h1, w1 = frame_l.shape[:2]
+        h1 = frame_l.shape[0]
         h2, w2 = frame_r.shape[:2]
         
-        # Escalar si son diferentes
-        if h1 != h2 or w1 != w2:
-            frame_r = cv2.resize(frame_r, (w1, h1))
+        # Escalar proporcionalmente a la altura de la cámara 1
+        if h1 != h2:
+            scale = h1 / h2
+            frame_r = cv2.resize(frame_r, (int(w2 * scale), h1))
             
         combined = np.hstack((frame_l, frame_r))
         cv2.imshow("Mobility Scan 3D", combined)

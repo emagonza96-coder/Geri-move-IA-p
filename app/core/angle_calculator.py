@@ -34,26 +34,33 @@ NORMAL_ROM = {
 def calculate_angle(a: List[float], b: List[float], c: List[float]) -> float:
     """
     Calcula el ángulo en el punto b (vértice) formado por los puntos a-b-c.
-    Usa coordenadas 2D [x, y] de los landmarks normalizados de MediaPipe.
-
-    Args:
-        a: Coordenadas del primer punto
-        b: Coordenadas del vértice (donde se mide el ángulo)
-        c: Coordenadas del tercer punto
-
-    Returns:
-        Ángulo en grados (0-180)
+    Si los puntos tienen Z (len == 3), usa álgebra 3D real (producto punto).
+    Si no, hace fallback a trigonometría 2D.
     """
-    a = np.array(a[:2])
-    b = np.array(b[:2])
-    c = np.array(c[:2])
+    if len(a) >= 3 and len(b) >= 3 and len(c) >= 3 and all(v is not None for v in [a[2], b[2], c[2]]):
+        vec1 = np.array(a[:3]) - np.array(b[:3])
+        vec2 = np.array(c[:3]) - np.array(b[:3])
+        
+        norm1 = np.linalg.norm(vec1)
+        norm2 = np.linalg.norm(vec2)
+        if norm1 < 1e-6 or norm2 < 1e-6:
+            return 0.0
+            
+        cosine_angle = np.dot(vec1, vec2) / (norm1 * norm2)
+        cosine_angle = np.clip(cosine_angle, -1.0, 1.0)
+        angle = np.arccos(cosine_angle) * 180.0 / np.pi
+    else:
+        a_2d = np.array(a[:2])
+        b_2d = np.array(b[:2])
+        c_2d = np.array(c[:2])
 
-    radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(
-        a[1] - b[1], a[0] - b[0]
-    )
-    angle = np.abs(radians * 180.0 / np.pi)
-    if angle > 180.0:
-        angle = 360 - angle
+        radians = np.arctan2(c_2d[1] - b_2d[1], c_2d[0] - b_2d[0]) - np.arctan2(
+            a_2d[1] - b_2d[1], a_2d[0] - b_2d[0]
+        )
+        angle = np.abs(radians * 180.0 / np.pi)
+        if angle > 180.0:
+            angle = 360 - angle
+            
     return round(angle, 1)
 
 
@@ -94,9 +101,11 @@ def _dist2d(lm_a: dict, lm_b: dict) -> float:
 
 
 def _midpoint(lm_a: dict, lm_b: dict) -> dict:
-    """Punto medio entre dos landmarks."""
-    return {"x": (lm_a["x"] + lm_b["x"]) / 2,
-            "y": (lm_a["y"] + lm_b["y"]) / 2}
+    """Punto medio entre dos landmarks, conservando Z si existe."""
+    mid = {"x": (lm_a["x"] + lm_b["x"]) / 2, "y": (lm_a["y"] + lm_b["y"]) / 2}
+    if "z" in lm_a and "z" in lm_b and lm_a["z"] is not None and lm_b["z"] is not None:
+        mid["z"] = (lm_a["z"] + lm_b["z"]) / 2
+    return mid
 
 
 def _calculate_spine_angles(landmarks: list) -> Dict[str, Dict]:
@@ -291,9 +300,9 @@ def calculate_all_angles(
             }
             continue
 
-        point_a = [lm_a["x"], lm_a["y"]]
-        point_b = [lm_b["x"], lm_b["y"]]
-        point_c = [lm_c["x"], lm_c["y"]]
+        point_a = [lm_a["x"], lm_a["y"]] + ([lm_a["z"]] if lm_a.get("z") is not None else [])
+        point_b = [lm_b["x"], lm_b["y"]] + ([lm_b["z"]] if lm_b.get("z") is not None else [])
+        point_c = [lm_c["x"], lm_c["y"]] + ([lm_c["z"]] if lm_c.get("z") is not None else [])
 
         angle = calculate_angle(point_a, point_b, point_c)
         status = get_angle_status(angle, joint_info["rom_key"])

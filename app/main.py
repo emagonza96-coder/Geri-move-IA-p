@@ -30,7 +30,8 @@ import numpy as np
 from core.pose_detector import PoseDetector
 from core.angle_calculator import calculate_all_angles
 from core.hand_detector import HandDetector
-from core.hand_angle_calculator import calculate_hand_angles
+from core.hand_metrics import calculate_hand_metrics
+from core.calibration_profile import CalibrationProfile
 
 
 class ThreadedCapture:
@@ -264,8 +265,9 @@ def create_hud(
     by = h - 24
     cv2.rectangle(frame, (0, by), (w, h), (10, 10, 10), -1)
     cv2.line(frame, (0, by), (w, by), (0, 175, 150), 1, cv2.LINE_AA)
-    cv2.putText(frame, "Q:Salir  S:Captura  P:Pausar  H:Panel  M:Modo",
-                (10, h - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (110, 110, 110), 1, cv2.LINE_AA)
+    
+    # Textos de la barra inferior según el estado (se actualiza luego en el loop, pero ponemos unos defaults aquí)
+    pass
 
     return frame
 
@@ -371,31 +373,92 @@ def main():
     print(f"[INFO] Video de salida: {output_video_path}")
     print(f"[INFO] Datos de salida: {output_data_path}")
 
+    # Variables de sesión
+    profile = CalibrationProfile()
+    recording_active = False
+    
+    # Variables para modo ajuste con ratón
+    mouse_state = {"dragging": None, "x": 0, "y": 0}
+    current_landmarks = [] # Para el callback del ratón
+
+    def on_mouse(event, x, y, flags, param):
+        if recording_active or not current_landmarks:
+            # Solo permitimos arrastrar en modo calibración (no grabando)
+            return
+        
+        # Coordenadas normalizadas
+        nx, ny = x / frame_w, y / frame_h
+        mouse_state["x"] = nx
+        mouse_state["y"] = ny
+
+        if event == cv2.EVENT_LBUTTONDOWN:
+            # Encontrar el landmark más cercano (umbral 5% del ancho de pantalla)
+            min_dist = float('inf')
+            nearest_idx = None
+            for idx, lm in enumerate(current_landmarks):
+                if lm.get("visibility", 0) > 0.4:
+                    dist = ((lm["x"] - nx)**2 + (lm["y"] - ny)**2)**0.5
+                    if dist < 0.05 and dist < min_dist:
+                        min_dist = dist
+                        nearest_idx = idx
+            
+            if nearest_idx is not None:
+                mouse_state["dragging"] = nearest_idx
+                # Para calcular el offset, guardamos la posición original cruda (antes de apply)
+                # Como current_landmarks ya tiene offsets aplicados, calculamos la posición original:
+                lm_adj = current_landmarks[nearest_idx]
+                dx_curr, dy_curr = profile.offsets.get(nearest_idx, (0.0, 0.0))
+                mouse_state["orig_x"] = lm_adj["x"] - dx_curr
+                mouse_state["orig_y"] = lm_adj["y"] - dy_curr
+
+        elif event == cv2.EVENT_MOUSEMOVE:
+            if mouse_state["dragging"] is not None:
+                idx = mouse_state["dragging"]
+                dx = nx - mouse_state["orig_x"]
+                dy = ny - mouse_state["orig_y"]
+                profile.set_offset(idx, dx, dy)
+
+        elif event == cv2.EVENT_LBUTTONUP:
+            mouse_state["dragging"] = None
+
     if not args.headless:
         print(f"[INFO] Modo visual activo — presiona Q para salir")
+        cv2.namedWindow("Mobility Scan - MediaPipe + OpenCV")
+        cv2.setMouseCallback("Mobility Scan - MediaPipe + OpenCV", on_mouse)
     else:
         print(f"[INFO] Modo headless — procesando sin ventana...")
 
-    # Variables de sesión
+    # Variables de estado
     all_measurements = []
     frame_count      = 0
+    recorded_frames  = 0
     paused           = False
     panel_hidden     = False
     prev_time        = time.time()
     fps_display      = 0.0
-    active_mode      = "HAND" if args.mode == "hand" else "BODY"  # Modo activo actual
-    # Timestamp cacheado: se actualiza 1 vez/seg, no en cada frame
+    active_mode      = "HAND" if args.mode == "hand" else "BODY"
     cached_ts        = datetime.now().strftime("%H:%M:%S")
     ts_update_time   = time.time()
+    screenshot_time  = 0.0
 
     try:
         while cap.isOpened():
+            key = cv2.waitKey(1) & 0xFF
+            
+            # Procesar teclas globales primero
+            if key == 27: # ESC
+                print("[INFO] Salida solicitada por usuario")
+                break
+            elif key == ord("q"):
+                recording_active = not recording_active
+                if recording_active:
+                    print("[INFO] GRABANDO SECCIÓN")
+                else:
+                    print("[INFO] GRABACIÓN DETENIDA (Modo Calibración)")
+
             if paused:
-                key = cv2.waitKey(100) & 0xFF
                 if key == ord("p"):
                     paused = False
-                elif key == ord("q"):
-                    break
                 continue
 
             ret, frame = cap.read()
@@ -432,45 +495,60 @@ def main():
             # Detectar según el modo activo
             angles = {}
             detected = False
+            raw_landmarks = []
 
             if active_mode == "BODY" and detector:
-                landmarks = detector.detect(proc_frame)
-                if landmarks:
+                raw_landmarks = detector.detect(proc_frame)
+                if raw_landmarks:
                     detected = True
-                    angles = calculate_all_angles(landmarks)
+                    # Aplicar calibración
+                    current_landmarks = profile.apply(raw_landmarks)
+                    angles = calculate_all_angles(current_landmarks)
 
-                    all_measurements.append({
-                        "frame": frame_count,
-                        "timestamp": current_time,
-                        "mode": "body",
-                        "angles": {
-                            jk: {"angle": d["angle"], "status": d["status"], "visibility": d["visibility"]}
-                            for jk, d in angles.items()
-                        },
-                    })
-                    frame = detector.draw_skeleton(frame, landmarks, angles)
+                    if recording_active:
+                        all_measurements.append({
+                            "frame": recorded_frames,
+                            "timestamp": current_time,
+                            "mode": "body",
+                            "angles": {
+                                jk: {"angle": d["angle"], "status": d["status"], "visibility": d["visibility"]}
+                                for jk, d in angles.items()
+                            },
+                        })
+                    frame = detector.draw_skeleton(frame, current_landmarks, angles)
 
             elif active_mode == "HAND" and hand_detector:
                 hands = hand_detector.detect(proc_frame)
                 if hands:
                     detected = True
-                    for hand_data in hands:
-                        hand_angles = calculate_hand_angles(
-                            hand_data["landmarks"],
+                    for i, hand_data in enumerate(hands):
+                        # Aplicar calibración (usamos offset general para landmarks 0-20, asumiendo 1 mano para simplicidad de ajuste, aunque lo ideal sería offsets por mano)
+                        # Por ahora aplicamos offsets a los landmarks de la mano.
+                        calibrated_hand_lms = profile.apply(hand_data["landmarks"])
+                        hand_data["landmarks"] = calibrated_hand_lms
+                        if i == 0:
+                            current_landmarks = calibrated_hand_lms # Para el ratón, solo la primera mano
+
+                        hand_angles = calculate_hand_metrics(
+                            calibrated_hand_lms,
                             handedness=hand_data["handedness"],
                         )
                         angles.update(hand_angles)
 
-                    all_measurements.append({
-                        "frame": frame_count,
-                        "timestamp": current_time,
-                        "mode": "hand",
-                        "angles": {
-                            jk: {"angle": d["angle"], "status": d["status"], "visibility": d["visibility"]}
-                            for jk, d in angles.items()
-                        },
-                    })
+                    if recording_active:
+                        all_measurements.append({
+                            "frame": recorded_frames,
+                            "timestamp": current_time,
+                            "mode": "hand",
+                            "angles": {
+                                jk: {"angle": d["angle"], "status": d["status"], "visibility": d["visibility"]}
+                                for jk, d in angles.items()
+                            },
+                        })
                     frame = hand_detector.draw_hand(frame, hands, angles)
+            
+            if not detected:
+                current_landmarks = []
 
             if not detected:
                 cx, cy = frame_w // 2, frame_h // 2
@@ -494,20 +572,58 @@ def main():
                 active_mode=active_mode,
             )
 
-            # Escribir frame al video de salida
-            writer.write(frame)
+            # Escribir textos en la barra inferior y HUD de estado
+            h_f, w_f = frame.shape[:2]
+            if recording_active:
+                cv2.putText(frame, "GRABANDO SESION... [Q] Detener  [P] Pausa  [ESC] Salir  [H] Panel  [M] Modo",
+                            (10, h_f - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
+                
+                # Indicador REC debajo de la barra superior (derecha) para no sobreponerse
+                if time.time() % 1.0 > 0.4:
+                    cv2.circle(frame, (w_f - 100, 65), 8, (0, 0, 255), -1)
+                    cv2.putText(frame, "REC", (w_f - 85, 71),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
+                
+                # Borde rojo alrededor del video para indicar grabación activa
+                cv2.rectangle(frame, (0, 0), (w_f-1, h_f-1), (0, 0, 255), 2)
+            else:
+                cv2.putText(frame, "CALIBRACION: Arrastre los puntos. [Q] Iniciar Grabacion  [ESC] Salir  [R] Reset",
+                            (10, h_f - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
+                
+                # Indicador claro debajo de la barra superior (centro)
+                cv2.putText(frame, "MODO CALIBRACION - NO GRABANDO", (w_f // 2 - 160, 65),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+
+            # Confirmación visual de screenshot
+            dt_screen = time.time() - screenshot_time
+            if dt_screen < 1.0:
+                # Texto flotante
+                cv2.putText(frame, "CAPTURA GUARDADA", (w_f // 2 - 110, h_f // 2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
+
+            # Resaltar landmarks ajustados solo en modo calibración
+            if not recording_active:
+                for idx, lm in enumerate(current_landmarks):
+                    if lm.get("_adjusted", False):
+                        px, py = int(lm["x"] * frame_w), int(lm["y"] * frame_h)
+                        cv2.circle(frame, (px, py), 6, (0, 215, 255), -1) # Dorado
+                        cv2.circle(frame, (px, py), 8, (0, 100, 200), 1)
+
+            # Escribir frame al video de salida solo si estamos grabando
+            if recording_active:
+                writer.write(frame)
+                recorded_frames += 1
 
             # Mostrar ventana si no es headless
             if not args.headless:
                 cv2.imshow("Mobility Scan - MediaPipe + OpenCV", frame)
 
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    print("[INFO] Salida solicitada por usuario")
-                    break
-                elif key == ord("s"):
+            # Teclas de acción locales procesadas aquí (las de flujo ya se checan arriba en cv2.waitKey(1))
+            if key != 255:
+                if key == ord("s"):
                     screenshot_path = output_dir / f"captura_{session_id}_f{frame_count}.png"
                     cv2.imwrite(str(screenshot_path), frame)
+                    screenshot_time = time.time()
                     print(f"[INFO] Captura guardada: {screenshot_path}")
                 elif key == ord("p"):
                     paused = True
@@ -523,6 +639,9 @@ def main():
                     elif active_mode == "HAND" and detector:
                         active_mode = "BODY"
                     print(f"[INFO] Modo cambiado manualmente a: {active_mode}")
+                elif key == ord("r") and not recording_active:
+                    profile.reset()
+                    print(f"[INFO] Calibración reseteada")
 
             # Progreso para archivos de video
             if total_frames > 0 and frame_count % 100 == 0:
@@ -539,7 +658,7 @@ def main():
             "source": str(source),
             "resolution": f"{frame_w}x{frame_h}",
             "fps": fps_source,
-            "total_frames_processed": frame_count,
+            "total_frames_processed": recorded_frames,
             "model_complexity": args.model,
             "detection_mode": args.mode,
             "detection_confidence": args.confidence,
@@ -563,9 +682,10 @@ def main():
         print(f"\n{'='*50}")
         print(f"  SESIÓN COMPLETADA")
         print(f"{'='*50}")
-        print(f"  Frames procesados: {frame_count}")
-        print(f"  Video guardado:    {output_video_path}")
-        print(f"  Datos guardados:   {output_data_path}")
+        print(f"  Frames visualizados: {frame_count}")
+        print(f"  Frames grabados:     {recorded_frames}")
+        print(f"  Video guardado:      {output_video_path}")
+        print(f"  Datos guardados:     {output_data_path}")
         print(f"{'='*50}")
 
         # Mostrar resumen de ángulos
