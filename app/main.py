@@ -29,6 +29,8 @@ import numpy as np
 
 from core.pose_detector import PoseDetector
 from core.angle_calculator import calculate_all_angles
+from core.hand_detector import HandDetector
+from core.hand_angle_calculator import calculate_hand_angles
 
 
 class ThreadedCapture:
@@ -88,7 +90,7 @@ def parse_args():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="/data/output",
+        default="output",
         help="Directorio de salida para videos y datos (default: /data/output)",
     )
     parser.add_argument(
@@ -123,6 +125,13 @@ def parse_args():
         choices=["left", "right"],
         help="Lado del panel de ángulos: left o right (default: left)",
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="body",
+        choices=["body", "hand"],
+        help="Modo de detección: body (cuerpo completo), hand (manos/dedos). Usa tecla M para cambiar en vivo. (default: body)",
+    )
     return parser.parse_args()
 
 
@@ -139,6 +148,7 @@ def create_hud(
     panel_side: str = "left",
     panel_hidden: bool = False,
     cached_ts: str = "",
+    active_mode: str = "BODY",
 ) -> np.ndarray:
     """
     Dibuja el HUD optimizado:
@@ -162,6 +172,17 @@ def create_hud(
     fps_color = (80, 240, 100) if fps >= 20 else (60, 165, 255) if fps >= 10 else (60, 80, 255)
     cv2.putText(frame, f"FPS {fps:.0f}", (w - 88, 17),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.44, fps_color, 1, cv2.LINE_AA)
+
+    # Indicador de modo activo (CUERPO / MANO)
+    if active_mode == "HAND":
+        mode_color = (255, 160, 100)  # Azul-rosa
+        mode_label = "MANO"
+    else:
+        mode_color = (0, 195, 165)
+        mode_label = "CUERPO"
+    cv2.putText(frame, mode_label, (w // 2 - 30, 17),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.44, mode_color, 1, cv2.LINE_AA)
+
     bx = w - 88
     cv2.rectangle(frame, (bx, 24), (bx + 44, 30), (40, 40, 40), -1)
     fill_px = int(44 * min(fps / 30.0, 1.0))
@@ -243,7 +264,7 @@ def create_hud(
     by = h - 24
     cv2.rectangle(frame, (0, by), (w, h), (10, 10, 10), -1)
     cv2.line(frame, (0, by), (w, by), (0, 175, 150), 1, cv2.LINE_AA)
-    cv2.putText(frame, "Q:Salir  S:Captura  P:Pausar  H:Panel",
+    cv2.putText(frame, "Q:Salir  S:Captura  P:Pausar  H:Panel  M:Modo",
                 (10, h - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (110, 110, 110), 1, cv2.LINE_AA)
 
     return frame
@@ -319,11 +340,19 @@ def main():
     if total_frames > 0:
         print(f"[INFO] Total frames: {total_frames}")
 
-    # Inicializar detector
-    print(f"[INFO] Inicializando MediaPipe (modelo={args.model}, confianza={args.confidence})")
+    # Inicializar detectores según modo inicial (ambos se cargan para permitir cambio con M)
+    detector = None
+    hand_detector = None
+
+    print(f"[INFO] Inicializando MediaPipe Pose (modelo={args.model}, confianza={args.confidence})")
     detector = PoseDetector(
         min_detection_confidence=args.confidence,
         model_complexity=args.model,
+    )
+
+    print(f"[INFO] Inicializando MediaPipe Hands (confianza={args.confidence})")
+    hand_detector = HandDetector(
+        min_detection_confidence=args.confidence,
     )
 
     # Preparar escritor de video de salida (siempre en resolución original)
@@ -354,6 +383,7 @@ def main():
     panel_hidden     = False
     prev_time        = time.time()
     fps_display      = 0.0
+    active_mode      = "HAND" if args.mode == "hand" else "BODY"  # Modo activo actual
     # Timestamp cacheado: se actualiza 1 vez/seg, no en cada frame
     cached_ts        = datetime.now().strftime("%H:%M:%S")
     ts_update_time   = time.time()
@@ -399,27 +429,50 @@ def main():
             else:
                 proc_frame = frame
 
-            # Detectar pose (en frame reducido = más rápido)
-            landmarks = detector.detect(proc_frame)
-
+            # Detectar según el modo activo
             angles = {}
-            if landmarks:
-                # Calcular ángulos
-                angles = calculate_all_angles(landmarks)
+            detected = False
 
-                # Guardar medición
-                all_measurements.append({
-                    "frame": frame_count,
-                    "timestamp": current_time,
-                    "angles": {
-                        jk: {"angle": d["angle"], "status": d["status"], "visibility": d["visibility"]}
-                        for jk, d in angles.items()
-                    },
-                })
+            if active_mode == "BODY" and detector:
+                landmarks = detector.detect(proc_frame)
+                if landmarks:
+                    detected = True
+                    angles = calculate_all_angles(landmarks)
 
-                # Dibujar esqueleto sobre el frame original (full res)
-                frame = detector.draw_skeleton(frame, landmarks, angles)
-                # Sin detección — indicador visible con fondo
+                    all_measurements.append({
+                        "frame": frame_count,
+                        "timestamp": current_time,
+                        "mode": "body",
+                        "angles": {
+                            jk: {"angle": d["angle"], "status": d["status"], "visibility": d["visibility"]}
+                            for jk, d in angles.items()
+                        },
+                    })
+                    frame = detector.draw_skeleton(frame, landmarks, angles)
+
+            elif active_mode == "HAND" and hand_detector:
+                hands = hand_detector.detect(proc_frame)
+                if hands:
+                    detected = True
+                    for hand_data in hands:
+                        hand_angles = calculate_hand_angles(
+                            hand_data["landmarks"],
+                            handedness=hand_data["handedness"],
+                        )
+                        angles.update(hand_angles)
+
+                    all_measurements.append({
+                        "frame": frame_count,
+                        "timestamp": current_time,
+                        "mode": "hand",
+                        "angles": {
+                            jk: {"angle": d["angle"], "status": d["status"], "visibility": d["visibility"]}
+                            for jk, d in angles.items()
+                        },
+                    })
+                    frame = hand_detector.draw_hand(frame, hands, angles)
+
+            if not detected:
                 cx, cy = frame_w // 2, frame_h // 2
                 cv2.rectangle(frame, (cx - 115, cy - 20), (cx + 115, cy + 10), (20, 20, 20), -1)
                 cv2.rectangle(frame, (cx - 115, cy - 20), (cx + 115, cy + 10), (0, 60, 200), 1)
@@ -438,6 +491,7 @@ def main():
                 panel_side=args.panel_side,
                 panel_hidden=panel_hidden,
                 cached_ts=cached_ts,
+                active_mode=active_mode,
             )
 
             # Escribir frame al video de salida
@@ -462,6 +516,13 @@ def main():
                     panel_hidden = not panel_hidden
                     estado = "oculto" if panel_hidden else "visible"
                     print(f"[INFO] Panel de ángulos {estado}")
+                elif key == ord("m"):
+                    # Cambio manual de modo
+                    if active_mode == "BODY" and hand_detector:
+                        active_mode = "HAND"
+                    elif active_mode == "HAND" and detector:
+                        active_mode = "BODY"
+                    print(f"[INFO] Modo cambiado manualmente a: {active_mode}")
 
             # Progreso para archivos de video
             if total_frames > 0 and frame_count % 100 == 0:
@@ -480,6 +541,7 @@ def main():
             "fps": fps_source,
             "total_frames_processed": frame_count,
             "model_complexity": args.model,
+            "detection_mode": args.mode,
             "detection_confidence": args.confidence,
             "measurements": all_measurements,
             "summary": generate_summary(all_measurements),
@@ -491,7 +553,10 @@ def main():
         # Liberar recursos
         cap.release()
         writer.release()
-        detector.release()
+        if detector:
+            detector.release()
+        if hand_detector:
+            hand_detector.release()
         if not args.headless:
             cv2.destroyAllWindows()
 

@@ -47,12 +47,16 @@ class PoseDetector:
     _C_ARM_R  = (160,  90, 230)   # Violeta
     _C_LEG_L  = ( 90, 215,  90)   # Verde
     _C_LEG_R  = ( 80, 205, 220)   # Amarillo dorado
+    _C_NECK   = (210, 180, 240)   # Lila claro (cuello/cervical)
 
     # Lista de (par_de_landmarks, color_BGR, grosor)
     SKELETON_CONNECTIONS_COLORED = [
         # Torso
         ((11, 12), _C_TORSO, 3), ((11, 23), _C_TORSO, 3),
         ((12, 24), _C_TORSO, 3), ((23, 24), _C_TORSO, 3),
+        # Cuello / cervical (oreja → hombro + línea entre orejas)
+        ((7,  8),  _C_NECK,  2),
+        ((7,  11), _C_NECK,  2), ((8,  12), _C_NECK,  2),
         # Brazo izquierdo
         ((11, 13), _C_ARM_L, 2), ((13, 15), _C_ARM_L, 2),
         ((15, 17), _C_ARM_L, 1), ((15, 19), _C_ARM_L, 1),
@@ -70,6 +74,7 @@ class PoseDetector:
     # Nombres de landmarks principales
     LANDMARK_NAMES = {
         0:  "nariz",
+        7:  "oreja_izq",  8:  "oreja_der",
         11: "hombro_izq", 12: "hombro_der",
         13: "codo_izq",   14: "codo_der",
         15: "muneca_izq", 16: "muneca_der",
@@ -143,6 +148,23 @@ class PoseDetector:
 
         return landmarks
 
+    @staticmethod
+    def get_torso_visibility(landmarks: List[Dict], threshold: float = 0.5) -> int:
+        """
+        Cuenta cuántos landmarks de referencia corporal (hombros + caderas) son visibles.
+        Se usa para decidir si el cuerpo está suficientemente visible o si la persona
+        está demasiado cerca y solo se ve una extremidad.
+
+        Args:
+            landmarks: Lista de landmarks de MediaPipe Pose
+            threshold: Umbral mínimo de visibilidad (default 0.5)
+
+        Returns:
+            Número de puntos de referencia visibles (0 a 4)
+        """
+        torso_indices = [11, 12, 23, 24]  # hombro_izq, hombro_der, cadera_izq, cadera_der
+        return sum(1 for idx in torso_indices if landmarks[idx]["visibility"] > threshold)
+
     def draw_skeleton(
         self,
         frame: np.ndarray,
@@ -190,6 +212,7 @@ class PoseDetector:
         vertex_map = {
             "hombro_izq": 11, "codo_izq": 13, "cadera_izq": 23, "rodilla_izq": 25,
             "hombro_der": 12, "codo_der": 14, "cadera_der": 24, "rodilla_der": 26,
+            "muneca_izq": 15, "muneca_der": 16,
         }
 
         for joint_key, data in angles.items():
