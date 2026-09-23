@@ -819,8 +819,8 @@ def generate_summary(measurements: List[dict]) -> dict:
     # Agrupar valores de ángulo por articulación en un solo recorrido
     angle_data: dict = {}
     for m in measurements:
-        for joint_key, data in m["angles"].items():
-            if data["angle"] is not None:
+        for joint_key, data in m.get("angles", {}).items():
+            if data.get("angle") is not None:
                 if joint_key not in angle_data:
                     angle_data[joint_key] = []
                 angle_data[joint_key].append(data["angle"])
