@@ -1,0 +1,45 @@
+# Rangos clínicos estandarizados. 
+# Terminología neutra: los valores fuera de "expected_range" se reportan como "fuera de referencia".
+clinical_rom:
+  hombro_flexion: 
+    expected_range: [0, 180]
+    view: "sagital"
+    plane: "sagital"
+  hombro_extension:
+    expected_range: [0, 60]
+    view: "sagital"
+    plane: "sagital"
+  hombro_abduccion:
+    expected_range: [0, 180]
+    view: "frontal"
+    plane: "frontal"
+    warning: "Confiabilidad reducida con 1 camara (posible paralaje)"
+  codo_flexion:
+    expected_range: [0, 145]
+    view: "sagital"
+    plane: "sagital"
+  cadera_flexion:
+    expected_range: [0, 125]
+    view: "sagital"
+    plane: "sagital"
+  cadera_abduccion:
+    expected_range: [0, 45]
+    view: "frontal"
+    plane: "frontal"
+    warning: "Confiabilidad reducida con 1 camara (posible paralaje)"
+  rodilla_flexion:
+    expected_range: [0, 140]
+    view: "sagital"
+    plane: "sagital"
+  tobillo_dorsiflexion:
+    expected_range: [0, 20]
+    view: "sagital"
+    plane: "sagital"
+  tobillo_plantiflexion:
+    expected_range: [0, 50]
+    view: "sagital"
+    plane: "sagital"
+
+thresholds:
+  visibility_min: 0.5
+  confidence_min: 0.7

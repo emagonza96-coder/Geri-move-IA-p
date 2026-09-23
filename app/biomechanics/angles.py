@@ -6,29 +6,7 @@ Usa trigonometría con coordenadas de landmarks de MediaPipe.
 import numpy as np
 from typing import Dict, List
 
-
-# Rangos de movilidad normal (ROM) por articulación y movimiento
-NORMAL_ROM = {
-    # Extremidades superiores
-    "hombro_flexion": (0, 180),
-    "hombro_extension": (0, 60),
-    "hombro_abduccion": (0, 180),
-    "codo_flexion": (0, 145),
-    "muneca_flexion_extension": (0, 70),
-    # Extremidades inferiores
-    "cadera_flexion": (0, 125),
-    "cadera_extension": (0, 30),
-    "rodilla_flexion": (0, 140),
-    "tobillo_dorsiflexion": (0, 20),
-    "tobillo_plantiflexion": (0, 50),
-    # Cuello (columna cervical) — valores AMA Guides
-    "cuello_inclinacion": (0, 45),   # Flexion lateral (inclinarse hacia cada hombro)
-    "cuello_rotacion": (0, 80),      # Rotacion (girar hacia cada lado)
-    "cuello_flexion": (0, 50),       # Flexion (bajar la barbilla) - mejor en vista lateral
-    # Tronco (columna lumbar + torácica)
-    "tronco_inclinacion": (0, 35),   # Inclinacion lateral
-    "tronco_rotacion": (0, 45),      # Rotacion del tronco
-}
+from app.config.loader import load_config, get_rom, get_clinical_details
 
 
 def calculate_angle(a: List[float], b: List[float], c: List[float]) -> float:
@@ -71,16 +49,14 @@ def get_angle_status(angle: float, joint_key: str) -> str:
     Returns:
         'normal', 'limitado', o 'excedido'
     """
-    if joint_key not in NORMAL_ROM:
+    min_rom, max_rom = get_rom(joint_key)
+    if min_rom == 0 and max_rom == 0:
         return "sin_referencia"
 
-    min_rom, max_rom = NORMAL_ROM[joint_key]
     if min_rom <= angle <= max_rom:
-        return "normal"
-    elif angle < min_rom:
-        return "limitado"
+        return "dentro_de_referencia"
     else:
-        return "excedido"
+        return "fuera_de_referencia"
 
 
 def _segment_tilt_from_vertical(pt_top: dict, pt_bottom: dict) -> float:
@@ -146,7 +122,7 @@ def _calculate_spine_angles(landmarks: list) -> Dict[str, Dict]:
             "status": get_angle_status(tilt, "cuello_inclinacion"),
             "visibility": round(min(ear_l["visibility"], ear_r["visibility"]), 2),
             "rom_key": "cuello_inclinacion",
-            "rom_range": NORMAL_ROM["cuello_inclinacion"],
+            "rom_range": get_rom("cuello_inclinacion"),
         }
 
     # 2. ROTACIÓN DEL CUELLO
@@ -165,7 +141,7 @@ def _calculate_spine_angles(landmarks: list) -> Dict[str, Dict]:
                 "status": get_angle_status(rotation, "cuello_rotacion"),
                 "visibility": round(min(nose["visibility"], ear_l["visibility"], ear_r["visibility"]), 2),
                 "rom_key": "cuello_rotacion",
-                "rom_range": NORMAL_ROM["cuello_rotacion"],
+                "rom_range": get_rom("cuello_rotacion"),
             }
 
     # 3. INCLINACIÓN LATERAL DEL TRONCO
@@ -182,7 +158,7 @@ def _calculate_spine_angles(landmarks: list) -> Dict[str, Dict]:
             "visibility": round(min(sh_l["visibility"], sh_r["visibility"],
                                     hip_l["visibility"], hip_r["visibility"]), 2),
             "rom_key": "tronco_inclinacion",
-            "rom_range": NORMAL_ROM["tronco_inclinacion"],
+            "rom_range": get_rom("tronco_inclinacion"),
         }
 
     # 4. ROTACIÓN DEL TRONCO
@@ -203,7 +179,7 @@ def _calculate_spine_angles(landmarks: list) -> Dict[str, Dict]:
                 "visibility": round(min(sh_l["visibility"], sh_r["visibility"],
                                         hip_l["visibility"], hip_r["visibility"]), 2),
                 "rom_key": "tronco_rotacion",
-                "rom_range": NORMAL_ROM["tronco_rotacion"],
+                "rom_range": get_rom("tronco_rotacion"),
             }
 
     return results
@@ -307,13 +283,16 @@ def calculate_all_angles(
         angle = calculate_angle(point_a, point_b, point_c)
         status = get_angle_status(angle, joint_info["rom_key"])
 
+        details = get_clinical_details(joint_info["rom_key"])
+        
         results[joint_key] = {
             "name": joint_info["name"],
             "angle": angle,
             "status": status,
             "visibility": round(min_visibility, 2),
             "rom_key": joint_info["rom_key"],
-            "rom_range": NORMAL_ROM.get(joint_info["rom_key"]),
+            "rom_range": details.get("expected_range", (0.0, 0.0)),
+            "warning": details.get("warning"),
         }
 
     # --- Ángulos de cuello y tronco (cálculos especiales con puntos medios) ---

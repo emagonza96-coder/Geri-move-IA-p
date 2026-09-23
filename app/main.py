@@ -27,11 +27,12 @@ from typing import List
 import cv2
 import numpy as np
 
-from core.pose_detector import PoseDetector
-from core.angle_calculator import calculate_all_angles
-from core.hand_detector import HandDetector
-from core.hand_metrics import calculate_hand_metrics
-from core.calibration_profile import CalibrationProfile
+from app.pose.mediapipe_impl import MediaPipePoseEstimator
+from app.biomechanics.angles import calculate_all_angles
+from app.pose.hand import HandDetector
+from app.biomechanics.hand import evaluate_biomechanics
+from app.processing.profile import CalibrationProfile
+from app.ui.overlay import draw_skeleton
 
 
 class ThreadedCapture:
@@ -150,72 +151,71 @@ def create_hud(
     panel_hidden: bool = False,
     cached_ts: str = "",
     active_mode: str = "BODY",
+    hand_metrics: dict = None,
 ) -> np.ndarray:
     """
-    Dibuja el HUD optimizado:
-    - Timestamp cacheado fuera del bucle (sin llamadas al SO por frame)
-    - Barra ROM por articulación
-    - Indicadores como círculos OpenCV (sin Unicode)
-    - Panel posicionable y ocultable con H
+    Dibuja el sidebar completo (panel derecho de 240px).
+    La cámara (área izquierda) NO es tocada por esta función.
+    - Modo CUERPO: muestra barras de ROM por articulación.
+    - Modo MANO: muestra goniometría por dedo + Kapandji + Cierre.
     """
     h, w, _ = frame.shape
+    SIDEBAR_W = 240
+    px0 = w - SIDEBAR_W  # Inicio del sidebar (ej. 640 si frame=880)
+    PAD = 10
 
-    # === BARRA SUPERIOR ===
-    cv2.rectangle(frame, (0, 0), (w, 44), (10, 10, 10), -1)
-    cv2.line(frame, (0, 44), (w, 44), (0, 195, 165), 1, cv2.LINE_AA)
+    # ── Fondo del sidebar ─────────────────────────────────────────────────────
+    cv2.rectangle(frame, (px0, 0), (w, h), (14, 14, 18), -1)
 
-    cv2.putText(frame, "MOBILITY SCAN", (12, 17),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 225, 195), 1, cv2.LINE_AA)
-    cv2.putText(frame, cached_ts, (12, 34),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.36, (120, 120, 120), 1, cv2.LINE_AA)
+    # ── Separador vertical (línea teal) ───────────────────────────────────────
+    cv2.line(frame, (px0, 0), (px0, h), (0, 195, 165), 1, cv2.LINE_AA)
 
-    # FPS + mini-barra de rendimiento
+    # ── ENCABEZADO ────────────────────────────────────────────────────────────
+    cv2.rectangle(frame, (px0, 0), (w, 46), (20, 20, 26), -1)
+    cv2.line(frame, (px0, 46), (w, 46), (0, 185, 155), 1, cv2.LINE_AA)
+
+    cv2.putText(frame, "MOBILITY SCAN", (px0 + PAD, 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 220, 190), 1, cv2.LINE_AA)
+    cv2.putText(frame, cached_ts, (px0 + PAD, 36),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.34, (100, 100, 115), 1, cv2.LINE_AA)
+
+    # FPS con mini-barra de carga
     fps_color = (80, 240, 100) if fps >= 20 else (60, 165, 255) if fps >= 10 else (60, 80, 255)
-    cv2.putText(frame, f"FPS {fps:.0f}", (w - 88, 17),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.44, fps_color, 1, cv2.LINE_AA)
+    cv2.putText(frame, f"{fps:.0f}fps", (w - 52, 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38, fps_color, 1, cv2.LINE_AA)
+    bar_bx = w - 52
+    cv2.rectangle(frame, (bar_bx, 24), (bar_bx + 40, 30), (40, 40, 40), -1)
+    fp = int(40 * min(fps / 30.0, 1.0))
+    if fp > 0:
+        cv2.rectangle(frame, (bar_bx, 24), (bar_bx + fp, 30), fps_color, -1)
 
-    # Indicador de modo activo (CUERPO / MANO)
+    # Badge de modo (pill indicator)
     if active_mode == "HAND":
-        mode_color = (255, 160, 100)  # Azul-rosa
+        mode_color = (255, 140, 80)
         mode_label = "MANO"
     else:
         mode_color = (0, 195, 165)
         mode_label = "CUERPO"
-    cv2.putText(frame, mode_label, (w // 2 - 30, 17),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.44, mode_color, 1, cv2.LINE_AA)
+    cv2.rectangle(frame, (w - 60, 32), (w - 4, 44), (30, 30, 36), -1)
+    cv2.putText(frame, mode_label, (w - 57, 43),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.30, mode_color, 1, cv2.LINE_AA)
 
-    bx = w - 88
-    cv2.rectangle(frame, (bx, 24), (bx + 44, 30), (40, 40, 40), -1)
-    fill_px = int(44 * min(fps / 30.0, 1.0))
-    if fill_px > 0:
-        cv2.rectangle(frame, (bx, 24), (bx + fill_px, 30), fps_color, -1)
-    cv2.putText(frame, f"#{frame_num}", (w - 88, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.34, (100, 100, 100), 1, cv2.LINE_AA)
+    cy = 54  # cursor y inicial, debajo del header
 
-    # === PANEL DE ÁNGULOS ===
-    if angles and not panel_hidden:
-        visible = [(k, v) for k, v in angles.items() if v["angle"] is not None]
+    # ── PANEL MODO CUERPO: ROM por articulación ───────────────────────────────
+    if active_mode == "BODY" and angles and not panel_hidden:
+        visible = [(k, v) for k, v in angles.items() if v.get("angle") is not None]
         if visible:
-            PANEL_W = 195
-            ROW_H = 33
-            panel_h = len(visible) * ROW_H + 28
-            panel_x = 8 if panel_side == "left" else w - PANEL_W - 8
-            panel_y = 50
+            PANEL_W = SIDEBAR_W - PAD * 2
+            ROW_H = 32
 
-            # Fondo sólido oscuro
-            cv2.rectangle(frame, (panel_x - 2, panel_y),
-                          (panel_x + PANEL_W + 2, panel_y + panel_h), (12, 12, 12), -1)
-            cv2.rectangle(frame, (panel_x - 2, panel_y),
-                          (panel_x + PANEL_W + 2, panel_y + panel_h), (0, 175, 150), 1, cv2.LINE_AA)
+            # Título de sección
+            cv2.putText(frame, "ANGULOS ROM", (px0 + PAD, cy + 13),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 200, 175), 1, cv2.LINE_AA)
+            cv2.line(frame, (px0 + PAD, cy + 17), (w - PAD, cy + 17), (0, 120, 105), 1)
+            cy += 22
 
-            # Encabezado
-            cv2.putText(frame, "ANGULOS", (panel_x + 6, panel_y + 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 210, 185), 1, cv2.LINE_AA)
-            cv2.line(frame, (panel_x - 2, panel_y + 20),
-                     (panel_x + PANEL_W + 2, panel_y + 20), (0, 140, 120), 1)
-
-            y = panel_y + 32
-            bar_w = PANEL_W - 14
+            bar_w = PANEL_W - 50
 
             for _, data in visible:
                 angle_val = data["angle"]
@@ -232,44 +232,125 @@ def create_hud(
                 else:
                     color = (150, 150, 150)
 
-                # Indicador circular (no Unicode)
-                cv2.circle(frame, (panel_x + 8, y - 4), 4, color, -1, cv2.LINE_AA)
+                # Indicador de estado + nombre articulación
+                cv2.circle(frame, (px0 + PAD + 4, cy + 7), 4, color, -1, cv2.LINE_AA)
+                cv2.putText(frame, name, (px0 + PAD + 14, cy + 11),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.33, (200, 200, 210), 1, cv2.LINE_AA)
+                # Ángulo numérico (alineado a la derecha)
+                cv2.putText(frame, f"{angle_val:.0f}", (w - 34, cy + 11),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv2.LINE_AA)
 
-                # Nombre articulación
-                cv2.putText(frame, name, (panel_x + 18, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.34, (205, 205, 205), 1, cv2.LINE_AA)
-
-                # Ángulo alineado a la derecha
-                cv2.putText(frame, f"{angle_val:.0f}", (panel_x + PANEL_W - 30, y),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.40, color, 1, cv2.LINE_AA)
-
-                # Barra de progreso ROM
-                bar_y = y + 6
-                cv2.rectangle(frame, (panel_x + 6, bar_y),
-                              (panel_x + 6 + bar_w, bar_y + _ROM_BAR_H), (45, 45, 45), -1)
+                # Barra ROM
+                bar_y = cy + 16
+                cv2.rectangle(frame, (px0 + PAD, bar_y), (px0 + PAD + bar_w, bar_y + 5), (40, 40, 46), -1)
                 if rom_range:
                     _, max_rom = rom_range
                     if max_rom > 0:
                         fill_f = min(angle_val / max_rom, 1.0)
-                        fp = int(bar_w * fill_f)
-                        if fp > 0:
-                            cv2.rectangle(frame, (panel_x + 6, bar_y),
-                                          (panel_x + 6 + fp, bar_y + _ROM_BAR_H), color, -1)
-                    # Marcador del límite máximo
-                    mx = panel_x + 6 + bar_w - 1
-                    cv2.line(frame, (mx, bar_y), (mx, bar_y + _ROM_BAR_H), (100, 100, 100), 1)
+                        fp2 = int(bar_w * fill_f)
+                        if fp2 > 0:
+                            cv2.rectangle(frame, (px0 + PAD, bar_y),
+                                          (px0 + PAD + fp2, bar_y + 5), color, -1)
 
-                y += ROW_H
+                cy += ROW_H
 
-    # === BARRA INFERIOR ===
-    by = h - 24
-    cv2.rectangle(frame, (0, by), (w, h), (10, 10, 10), -1)
-    cv2.line(frame, (0, by), (w, by), (0, 175, 150), 1, cv2.LINE_AA)
-    
-    # Textos de la barra inferior según el estado (se actualiza luego en el loop, pero ponemos unos defaults aquí)
-    pass
+    # ── PANEL MODO MANO: Goniometría clínica ──────────────────────────────────
+    elif active_mode == "HAND" and hand_metrics:
+        gonio = hand_metrics.get("goniometria", {})
+        abd   = hand_metrics.get("abduccion_pulgar")
+        cierre = hand_metrics.get("indice_cierre", 0.0)
+        kapandji = hand_metrics.get("kapandji_nivel", 0)
+        deformities = hand_metrics.get("deformidades", [])
+
+        # Título
+        cv2.putText(frame, "GONIOMETRIA MANO", (px0 + PAD, cy + 13),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 160, 80), 1, cv2.LINE_AA)
+        cv2.line(frame, (px0 + PAD, cy + 17), (w - PAD, cy + 17), (120, 75, 35), 1)
+        cy += 22
+
+        finger_rows = [
+            ("PULGAR",  [("MCF", gonio.get("pulgar_mcf")), ("IF",  gonio.get("pulgar_if"))]),
+            ("INDICE",  [("MCF", gonio.get("indice_mcf")), ("IFP", gonio.get("indice_ifp")), ("IFD", gonio.get("indice_ifd"))]),
+            ("MEDIO",   [("MCF", gonio.get("medio_mcf")),  ("IFP", gonio.get("medio_ifp")),  ("IFD", gonio.get("medio_ifd"))]),
+            ("ANULAR",  [("MCF", gonio.get("anular_mcf")), ("IFP", gonio.get("anular_ifp")), ("IFD", gonio.get("anular_ifd"))]),
+            ("MENIQUE", [("MCF", gonio.get("menique_mcf")),("IFP", gonio.get("menique_ifp")),("IFD", gonio.get("menique_ifd"))]),
+        ]
+
+        ROW_H    = 13
+        HEADER_H = 15
+
+        for finger_name, joints in finger_rows:
+            cv2.putText(frame, finger_name, (px0 + PAD, cy + HEADER_H - 3),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.30, (170, 170, 185), 1, cv2.LINE_AA)
+            cy += HEADER_H
+
+            for j_label, j_val in joints:
+                if j_val is None:
+                    angle_str, bar_fill, color = "--", 0, (70, 70, 80)
+                else:
+                    angle_str = f"{j_val:.0f}"
+                    bar_fill = int(max(0, min(j_val, 120)) / 120 * 70)
+                    if j_val < -5 or j_val > 110:
+                        color = (60, 60, 240)
+                    elif "IFP" in j_label:
+                        color = (80, 215, 255)
+                    elif "MCF" in j_label:
+                        color = (150, 150, 40)
+                    else:
+                        color = (90, 185, 100)
+
+                cv2.putText(frame, j_label, (px0 + PAD, cy + ROW_H - 1),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.27, (110, 110, 125), 1, cv2.LINE_AA)
+                bx_bar = px0 + PAD + 26
+                bx_end = bx_bar + 70
+                bar_y  = cy + ROW_H - 7
+                cv2.rectangle(frame, (bx_bar, bar_y), (bx_end, bar_y + 4), (35, 35, 42), -1)
+                if bar_fill > 0:
+                    cv2.rectangle(frame, (bx_bar, bar_y), (bx_bar + bar_fill, bar_y + 4), color, -1)
+                cv2.putText(frame, angle_str, (bx_end + 4, cy + ROW_H - 1),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.29, color, 1, cv2.LINE_AA)
+                cy += ROW_H
+
+            cv2.line(frame, (px0 + PAD, cy + 1), (w - PAD, cy + 1), (30, 30, 38), 1)
+            cy += 4
+
+        # Resumen global
+        cy += 4
+        cv2.line(frame, (px0 + PAD, cy), (w - PAD, cy), (0, 140, 120), 1)
+        cy += 8
+        cv2.putText(frame, "RESUMEN", (px0 + PAD, cy + 11),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 160, 80), 1, cv2.LINE_AA)
+        cy += 15
+
+        abd_str = f"{abd:.0f}deg" if abd is not None else "--"
+        cv2.putText(frame, f"Abd.Pulgar  {abd_str}", (px0 + PAD, cy + 11),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (180, 220, 220), 1, cv2.LINE_AA)
+        cy += 14
+
+        pct = int((cierre or 0) * 100)
+        c_color = (60, 220, 80) if pct > 70 else (60, 130, 255)
+        cv2.putText(frame, "Cierre puno", (px0 + PAD, cy + 11),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (160, 160, 175), 1, cv2.LINE_AA)
+        bpx = px0 + PAD + 78
+        cv2.rectangle(frame, (bpx, cy + 2), (bpx + 50, cy + 9), (35, 35, 42), -1)
+        cv2.rectangle(frame, (bpx, cy + 2), (bpx + int(50 * pct / 100), cy + 9), c_color, -1)
+        cv2.putText(frame, f"{pct}%", (bpx + 54, cy + 11),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.29, c_color, 1, cv2.LINE_AA)
+        cy += 14
+
+        kap_color = (60, 220, 80) if kapandji >= 8 else (80, 200, 200) if kapandji > 4 else (60, 130, 255)
+        cv2.putText(frame, f"Kapandji    {kapandji}/10", (px0 + PAD, cy + 11),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, kap_color, 1, cv2.LINE_AA)
+        cy += 14
+
+        if deformities:
+            for d in deformities[:3]:
+                cv2.putText(frame, f"! {d[:25]}", (px0 + PAD, cy + 11),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.27, (60, 60, 240), 1, cv2.LINE_AA)
+                cy += 13
 
     return frame
+
 
 
 def main():
@@ -347,7 +428,7 @@ def main():
     hand_detector = None
 
     print(f"[INFO] Inicializando MediaPipe Pose (modelo={args.model}, confianza={args.confidence})")
-    detector = PoseDetector(
+    detector = MediaPipePoseEstimator(
         min_detection_confidence=args.confidence,
         model_complexity=args.model,
     )
@@ -367,7 +448,7 @@ def main():
         str(output_video_path),
         fourcc,
         fps_source,
-        (frame_w, frame_h),
+        (frame_w + 240, frame_h),
     )
 
     print(f"[INFO] Video de salida: {output_video_path}")
@@ -471,6 +552,13 @@ def main():
                 # Solo para archivos de video: fin del archivo
                 print("[INFO] Fin del video")
                 break
+                
+            timestamp_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
+            if "last_timestamp_ms" not in locals():
+                last_timestamp_ms = -1
+            if timestamp_ms <= 0 or timestamp_ms <= last_timestamp_ms:
+                timestamp_ms = last_timestamp_ms + 33  # ~30 FPS
+            last_timestamp_ms = timestamp_ms
 
             frame_count += 1
 
@@ -498,7 +586,7 @@ def main():
             raw_landmarks = []
 
             if active_mode == "BODY" and detector:
-                raw_landmarks = detector.detect(proc_frame)
+                raw_landmarks = detector.detect(proc_frame, timestamp_ms)
                 if raw_landmarks:
                     detected = True
                     # Aplicar calibración
@@ -515,7 +603,7 @@ def main():
                                 for jk, d in angles.items()
                             },
                         })
-                    frame = detector.draw_skeleton(frame, current_landmarks, angles)
+                    frame = draw_skeleton(frame, current_landmarks, angles, panel_hidden)
 
             elif active_mode == "HAND" and hand_detector:
                 hands = hand_detector.detect(proc_frame)
@@ -529,32 +617,29 @@ def main():
                         if i == 0:
                             current_landmarks = calibrated_hand_lms # Para el ratón, solo la primera mano
 
-                        hand_angles = calculate_hand_metrics(
-                            calibrated_hand_lms,
-                            handedness=hand_data["handedness"],
-                        )
-                        angles.update(hand_angles)
+                        hand_angles = evaluate_biomechanics(calibrated_hand_lms)
+                        if i == 0:
+                            angles = hand_angles  # Metricas de la primera mano para el sidebar
 
                     if recording_active:
                         all_measurements.append({
                             "frame": recorded_frames,
                             "timestamp": current_time,
                             "mode": "hand",
-                            "angles": {
-                                jk: {"angle": d["angle"], "status": d["status"], "visibility": d["visibility"]}
-                                for jk, d in angles.items()
-                            },
                         })
-                    frame = hand_detector.draw_hand(frame, hands, angles)
+                    deformities = angles.get("deformidades", []) if isinstance(angles, dict) else []
+                    frame = hand_detector.draw_hand(frame, hands,
+                                                   cam_w=frame_w,
+                                                   deformities=deformities)
             
             if not detected:
                 current_landmarks = []
 
             if not detected:
-                cx, cy = frame_w // 2, frame_h // 2
-                cv2.rectangle(frame, (cx - 115, cy - 20), (cx + 115, cy + 10), (20, 20, 20), -1)
-                cv2.rectangle(frame, (cx - 115, cy - 20), (cx + 115, cy + 10), (0, 60, 200), 1)
-                cv2.putText(frame, "SIN DETECCION", (cx - 110, cy + 2),
+                px0 = frame_w
+                cv2.rectangle(frame, (px0 + 20, 65), (px0 + 220, 95), (20, 20, 20), -1)
+                cv2.rectangle(frame, (px0 + 20, 65), (px0 + 220, 95), (0, 60, 200), 1)
+                cv2.putText(frame, "SIN DETECCION", (px0 + 40, 87),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (60, 100, 255), 2, cv2.LINE_AA)
 
             # Actualizar timestamp cacheado (1 vez por segundo)
@@ -563,36 +648,59 @@ def main():
                 cached_ts = datetime.now().strftime("%H:%M:%S")
                 ts_update_time = now
 
-            # Dibujar HUD
+            # Expandir el frame para que el HUD quede en un panel lateral negro
+            SIDEBAR_W = 240
+            canvas = np.zeros((frame_h, frame_w + SIDEBAR_W, 3), dtype=np.uint8)
+            canvas[:, :frame_w] = frame
+            frame = canvas
+
+            # Dibujar sidebar unificado
+            hud_angles = angles if active_mode == "BODY" else {}
+            hud_hand   = angles if active_mode == "HAND" else None
             frame = create_hud(
-                frame, angles, fps_display, frame_count,
-                panel_side=args.panel_side,
-                panel_hidden=panel_hidden,
+                frame, hud_angles, fps_display, frame_count,
+                panel_hidden=False,
                 cached_ts=cached_ts,
                 active_mode=active_mode,
+                hand_metrics=hud_hand,
             )
 
-            # Escribir textos en la barra inferior y HUD de estado
+            # Escribir textos en la barra inferior y HUD de estado (aislado al panel lateral)
             h_f, w_f = frame.shape[:2]
+            px0 = w_f - SIDEBAR_W
+            
             if recording_active:
-                cv2.putText(frame, "GRABANDO SESION... [Q] Detener  [P] Pausa  [ESC] Salir  [H] Panel  [M] Modo",
-                            (10, h_f - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
+                # Fondo oscuro para la zona inferior del panel
+                cv2.rectangle(frame, (px0, h_f - 60), (w_f, h_f), (15, 15, 15), -1)
                 
-                # Indicador REC debajo de la barra superior (derecha) para no sobreponerse
+                cv2.putText(frame, "GRABANDO SESION", (px0 + 10, h_f - 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
+                cv2.putText(frame, "[Q] Detener [P] Pausa", (px0 + 10, h_f - 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
+                cv2.putText(frame, "[ESC] Salir [M] Modo", (px0 + 10, h_f - 7),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
+                
+                # Indicador REC debajo de la barra superior (en el panel lateral)
                 if time.time() % 1.0 > 0.4:
-                    cv2.circle(frame, (w_f - 100, 65), 8, (0, 0, 255), -1)
-                    cv2.putText(frame, "REC", (w_f - 85, 71),
+                    cv2.circle(frame, (px0 + 30, 65), 8, (0, 0, 255), -1)
+                    cv2.putText(frame, "REC", (px0 + 45, 71),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
                 
-                # Borde rojo alrededor del video para indicar grabación activa
-                cv2.rectangle(frame, (0, 0), (w_f-1, h_f-1), (0, 0, 255), 2)
+                # Borde rojo alrededor DEL PANEL LATERAL para indicar grabación activa (sin tocar la cámara)
+                cv2.rectangle(frame, (px0, 0), (w_f-1, h_f-1), (0, 0, 255), 2)
             else:
-                cv2.putText(frame, "CALIBRACION: Arrastre los puntos. [Q] Iniciar Grabacion  [ESC] Salir  [R] Reset",
-                            (10, h_f - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
+                # Fondo oscuro para la zona inferior del panel
+                cv2.rectangle(frame, (px0, h_f - 75), (w_f, h_f), (15, 15, 15), -1)
                 
-                # Indicador claro debajo de la barra superior (centro)
-                cv2.putText(frame, "MODO CALIBRACION - NO GRABANDO", (w_f // 2 - 160, 65),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(frame, "MODO CALIBRACION", (px0 + 10, h_f - 55),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+                cv2.putText(frame, "NO GRABANDO", (px0 + 10, h_f - 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+                            
+                cv2.putText(frame, "[Q] Iniciar [R] Reset", (px0 + 10, h_f - 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
+                cv2.putText(frame, "[ESC] Salir [M] Modo", (px0 + 10, h_f - 7),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
 
             # Confirmación visual de screenshot
             dt_screen = time.time() - screenshot_time
@@ -718,7 +826,7 @@ def generate_summary(measurements: List[dict]) -> dict:
                 angle_data[joint_key].append(data["angle"])
 
     # Calcular estadísticas — el nombre canónico viene de JOINT_ANGLES, no del JSON
-    from core.angle_calculator import JOINT_ANGLES
+    from app.biomechanics.angles import JOINT_ANGLES
     summary = {}
     for joint_key, values in angle_data.items():
         if values:
