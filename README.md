@@ -13,8 +13,6 @@ Sistema avanzado de detección de pose corporal y cálculo de ángulos articular
     *   Caché inteligente de renderizado de fuentes para maximizar FPS.
 *   **Soporte Multi-Resolución:** Capacidad de negociar resoluciones nativas más rápidas con las webcams (ej: 640x360).
 *   **Visualizador 3D:** Herramienta adicional (`view_skeleton_3d.py`) para renderizar el movimiento en un espacio 3D real usando matplotlib.
-*   **Preparado para Multi-Cámara:** Incluye módulos base de calibración estéreo y triangulación 3D para futuras expansiones.
-
 ## Requisitos
 
 - [Docker](https://docs.docker.com/get-docker/) instalado y Docker Compose, O Python 3.9+ en entorno virtual.
@@ -25,15 +23,16 @@ Sistema avanzado de detección de pose corporal y cálculo de ángulos articular
 ├── app/                   # Código fuente Python
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── main.py            # Aplicación principal de 1 cámara
-│   ├── multi_main.py      # Implementación base para múltiples cámaras
+│   ├── main.py            # Aplicación principal
 │   ├── view_skeleton_3d.py# Visualizador 3D de las sesiones
-│   └── core/
-│       ├── pose_detector.py      # Tracking y dibujo HUD
-│       ├── angle_calculator.py   # Cálculos ROM articulares
-│       ├── multi_camera.py       # Sincronización multi-cámara
-│       ├── calibration.py        # Calibración estéreo (tablero de ajedrez)
-│       └── triangulation.py      # Reconstrucción de puntos 3D reales
+│   ├── core/              # Orquestadores y controladores
+│   │   ├── session.py     # SessionManager (JSON y VideoWriter)
+│   │   └── input.py       # KeyboardController
+│   ├── biomechanics/      # Lógica clínica y trigonometría
+│   ├── pose/              # Modelos MediaPipe
+│   ├── ui/                # Renderizado HUD y gráficos
+│   ├── processing/        # Filtros (Savitzky-Golay, etc.)
+│   └── quality/           # Evaluador de framing y calidad
 ├── input/                 # Directorio para archivos de video locales
 ├── output/                # Directorio de resultados (video .mp4 + datos .json)
 ├── scripts/               # Utilidades de lanzamiento rápido
@@ -65,10 +64,14 @@ python app/main.py --source "http://192.168.1.169:8080/video" --width 640
 
 | Tecla | Acción |
 |-------|--------|
-| `Q`   | Salir y guardar sesión |
-| `S`   | Guardar captura de pantalla actual |
+| `ESC` | Salir de la aplicación |
+| `Q`   | Iniciar / Detener grabación (solo cuando hay buen encuadre) |
+| `O`   | Forzar grabación (ignorar advertencias de encuadre) |
 | `P`   | Pausar / Reanudar stream |
 | `H`   | Ocultar / Mostrar panel de ángulos |
+| `M`   | Cambiar de modo (Cuerpo Completo <-> Mano) |
+| `R`   | Resetear la calibración del perfil |
+| `S`   | Guardar captura de pantalla actual |
 
 ## Visualizador 3D
 

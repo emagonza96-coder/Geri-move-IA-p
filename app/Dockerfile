@@ -16,10 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /workspace
 
 # Instalar dependencias Python
-COPY requirements.txt .
+COPY app/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Descargar modelo PoseLandmarker (full) durante el build para que ya esté cacheado
@@ -27,6 +27,6 @@ RUN mkdir -p models && \
     wget -q -O models/pose_landmarker_full.task \
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"
 
-COPY . .
+COPY app ./app
 
-ENTRYPOINT ["python", "main.py"]
+ENTRYPOINT ["python", "-m", "app.main"]

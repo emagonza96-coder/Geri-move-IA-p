@@ -6,32 +6,38 @@ class QualityEvaluator:
     def __init__(self, visibility_threshold: float = 0.5):
         self.vis_threshold = visibility_threshold
 
-    def evaluate_frame(self, landmarks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def check_framing(self, landmarks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Evalúa un solo frame.
-        Retorna métricas como cantidad de puntos visibles, si el torso está visible, etc.
+        Verifica que los landmarks esenciales estén dentro del cuadro y visibles.
+        Retorna: {"valid": bool, "reason": str}
         """
         if not landmarks:
-            return {"valid": False, "visible_count": 0, "torso_visible": False, "reason": "No_Person"}
+            return {"valid": False, "reason": "Paciente no detectado"}
 
-        visible_count = sum(1 for lm in landmarks if lm.get("visibility", 0) > self.vis_threshold)
-        
-        # Índices de torso en MediaPipe (11, 12, 23, 24)
-        torso_indices = [11, 12, 23, 24]
-        torso_visible = True
-        try:
-            torso_visible = all(landmarks[i].get("visibility", 0) > self.vis_threshold for i in torso_indices)
-        except IndexError:
-            torso_visible = False
-
-        is_valid = visible_count > 10 and torso_visible # Regla básica: necesita ver torso y al menos 10 puntos en total
-
-        return {
-            "valid": is_valid,
-            "visible_count": visible_count,
-            "torso_visible": torso_visible,
-            "reason": "OK" if is_valid else ("Occlusion" if torso_visible else "No_Torso")
+        # Diccionario de índices esenciales
+        essential = {
+            "Cabeza": [0], # Nariz
+            "Hombros": [11, 12],
+            "Caderas": [23, 24],
+            "Rodillas": [25, 26],
+            "Pies": [27, 28] # Tobillos
         }
+
+        for part, indices in essential.items():
+            for idx in indices:
+                try:
+                    lm = landmarks[idx]
+                    if lm.get("visibility", 0) < self.vis_threshold:
+                        return {"valid": False, "reason": f"{part} con baja confianza: ajuste iluminación"}
+                    
+                    x, y = lm.get("x", -1), lm.get("y", -1)
+                    # Tolerancia estricta para encuadre
+                    if not (0.02 <= x <= 0.98 and 0.02 <= y <= 0.98):
+                        return {"valid": False, "reason": f"{part} fuera de cuadro: aleje la cámara"}
+                except IndexError:
+                    return {"valid": False, "reason": f"{part} no detectada"}
+
+        return {"valid": True, "reason": "Encuadre OK"}
 
     def summarize_session(self, frame_evaluations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Calcula estadísticas generales de la sesión."""

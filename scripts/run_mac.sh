@@ -34,7 +34,7 @@ mkdir -p output
 
 # Ejecutar el programa con el modelo optimizado (Lite)
 echo "🚀 Iniciando cámara web..."
-echo "Presiona la tecla 'Q' en la ventana de video para salir."
-python app/main.py --source 0 --output-dir output --model 0
+echo "Presiona la tecla 'ESC' o 'Q' en la ventana de video para salir."
+python -m app.main --source 0 --output-dir output --model 0
 
 echo "✅ Ejecución finalizada. Revisa la carpeta 'output/' para ver los resultados."

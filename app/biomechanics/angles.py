@@ -8,6 +8,14 @@ from typing import Dict, List
 
 from app.config.loader import load_config, get_rom, get_clinical_details
 
+def _is_valid_landmark(lm: dict, min_vis: float) -> bool:
+    if lm.get("visibility", 0) < min_vis:
+        return False
+    x, y = lm.get("x", -1), lm.get("y", -1)
+    # Margen leve por si MediaPipe devuelve coordenadas ligeramente fuera
+    if not (-0.1 <= x <= 1.1 and -0.1 <= y <= 1.1):
+        return False
+    return True
 
 def calculate_angle(a: List[float], b: List[float], c: List[float]) -> float:
     """
@@ -105,9 +113,13 @@ def _calculate_spine_angles(landmarks: list) -> Dict[str, Dict]:
     hip_l = landmarks[23]
     hip_r = landmarks[24]
 
-    ears_ok    = ear_l["visibility"] > 0.5 and ear_r["visibility"] > 0.5
-    shoulders_ok = sh_l["visibility"] > 0.5 and sh_r["visibility"] > 0.5
-    hips_ok    = hip_l["visibility"] > 0.5 and hip_r["visibility"] > 0.5
+    config = load_config()
+    min_vis = config.get("thresholds", {}).get("visibility_min", 0.5)
+
+    ears_ok      = _is_valid_landmark(ear_l, min_vis) and _is_valid_landmark(ear_r, min_vis)
+    shoulders_ok = _is_valid_landmark(sh_l, min_vis) and _is_valid_landmark(sh_r, min_vis)
+    hips_ok      = _is_valid_landmark(hip_l, min_vis) and _is_valid_landmark(hip_r, min_vis)
+    nose_ok      = _is_valid_landmark(nose, min_vis)
 
     # 1. INCLINACIÓN LATERAL DEL CUELLO
     #    Compara el eje cabeza (midpoint orejas) vs eje tronco (midpoint hombros)
@@ -128,7 +140,7 @@ def _calculate_spine_angles(landmarks: list) -> Dict[str, Dict]:
     # 2. ROTACIÓN DEL CUELLO
     #    Asimetría de la distancia nariz→oreja_izq vs nariz→oreja_der
     #    Cuando la cabeza gira, la oreja del lado que se aleja parece más lejos de la nariz
-    if ears_ok and nose["visibility"] > 0.5:
+    if ears_ok and nose_ok:
         d_l = _dist2d(nose, ear_l)
         d_r = _dist2d(nose, ear_r)
         total = d_l + d_r
@@ -136,7 +148,7 @@ def _calculate_spine_angles(landmarks: list) -> Dict[str, Dict]:
             ratio = abs(d_r - d_l) / total   # 0 = recto, ~1 = totalmente girado
             rotation = round(ratio * 80.0, 1)  # escalar a grados (max ~80°)
             results["cuello_rotacion"] = {
-                "name": "Cuello Rotación",
+                "name": "Rotación de Cuello",
                 "angle": rotation,
                 "status": get_angle_status(rotation, "cuello_rotacion"),
                 "visibility": round(min(nose["visibility"], ear_l["visibility"], ear_r["visibility"]), 2),
@@ -152,7 +164,7 @@ def _calculate_spine_angles(landmarks: list) -> Dict[str, Dict]:
         mid_hip = _midpoint(hip_l, hip_r)
         trunk_tilt = _segment_tilt_from_vertical(mid_sh, mid_hip)
         results["tronco_inclinacion"] = {
-            "name": "Tronco Inclinación",
+            "name": "Inclinación Lat. Tronco",
             "angle": trunk_tilt,
             "status": get_angle_status(trunk_tilt, "tronco_inclinacion"),
             "visibility": round(min(sh_l["visibility"], sh_r["visibility"],
@@ -173,7 +185,7 @@ def _calculate_spine_angles(landmarks: list) -> Dict[str, Dict]:
             deviation = abs(1.0 - ratio)
             rotation_est = round(min(deviation * 90.0, 45.0), 1)  # cap en 45°
             results["tronco_rotacion"] = {
-                "name": "Tronco Rotación",
+                "name": "Rotación de Tronco",
                 "angle": rotation_est,
                 "status": get_angle_status(rotation_est, "tronco_rotacion"),
                 "visibility": round(min(sh_l["visibility"], sh_r["visibility"],
@@ -232,12 +244,12 @@ JOINT_ANGLES = {
     },
     "muneca_izq": {
         "landmarks": (13, 15, 19),  # codo_izq → muneca_izq → indice_izq
-        "name": "Muñeca Izq",
+        "name": "Muñeca Flex/Ext Izq",
         "rom_key": "muneca_flexion_extension",
     },
     "muneca_der": {
         "landmarks": (14, 16, 20),  # codo_der → muneca_der → indice_der
-        "name": "Muñeca Der",
+        "name": "Muñeca Flex/Ext Der",
         "rom_key": "muneca_flexion_extension",
     },
 }
@@ -257,6 +269,9 @@ def calculate_all_angles(
     """
     results = {}
 
+    config = load_config()
+    min_vis = config.get("thresholds", {}).get("visibility_min", 0.5)
+
     # --- Ángulos de extremidades (lógica existente) ---
     for joint_key, joint_info in JOINT_ANGLES.items():
         idx_a, idx_b, idx_c = joint_info["landmarks"]
@@ -265,13 +280,14 @@ def calculate_all_angles(
         lm_b = landmarks[idx_b]
         lm_c = landmarks[idx_c]
 
+        is_valid = _is_valid_landmark(lm_a, min_vis) and _is_valid_landmark(lm_b, min_vis) and _is_valid_landmark(lm_c, min_vis)
         min_visibility = min(lm_a["visibility"], lm_b["visibility"], lm_c["visibility"])
 
-        if min_visibility < 0.5:
+        if not is_valid:
             results[joint_key] = {
                 "name": joint_info["name"],
                 "angle": None,
-                "status": "no_visible",
+                "status": "fuera_de_cuadro",
                 "visibility": round(min_visibility, 2),
             }
             continue

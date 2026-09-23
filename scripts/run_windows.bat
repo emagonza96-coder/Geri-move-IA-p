@@ -32,8 +32,8 @@ REM Crear carpeta de output si no existe
 if not exist "output\" mkdir output
 
 echo [INFO] Iniciando cámara web...
-echo [INFO] Presiona la tecla 'Q' en la ventana de video para salir.
-python app\main.py --source 0 --output-dir output --model 0
+echo [INFO] Presiona la tecla 'ESC' o 'Q' en la ventana de video para salir.
+python -m app.main --source 0 --output-dir output --model 0
 
 echo =====================================================
 echo Ejecución finalizada. Revisa la carpeta 'output\'
