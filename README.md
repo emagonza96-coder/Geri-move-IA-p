@@ -51,13 +51,13 @@ pip install -r app/requirements.txt
 
 ### 2. Ejecutar con Webcam Directa
 ```bash
-python app/main.py --source 0 --width 640
+python -m app.main --source 0
 ```
 
 ### 3. Ejecutar con IP Webcam (Celular)
 ```bash
 # Cambia la IP por la que te dé la app de tu teléfono (asegúrate de bajar la resolución en la app a 640x480)
-python app/main.py --source "http://192.168.1.169:8080/video" --width 640
+python -m app.main --source "http://192.168.1.169:8080/video"
 ```
 
 ## Controles en Vivo (Modo Ventana)
@@ -77,7 +77,7 @@ python app/main.py --source "http://192.168.1.169:8080/video" --width 640
 
 Para ver la representación tridimensional de una sesión guardada:
 ```bash
-python app/view_skeleton_3d.py output/sesion_20260918_130133_webcam_1_data.json
+python -m app.view_skeleton_3d output/sesion_20260918_130133_webcam_1_data.json
 ```
 
 ## Opciones y Argumentos (main.py)
@@ -87,10 +87,10 @@ python app/view_skeleton_3d.py output/sesion_20260918_130133_webcam_1_data.json
 | `--source` | ID de cámara (`0`, `1`), URL (`http://...`) o ruta a archivo de video | `0` |
 | `--headless` | Modo sin interfaz gráfica (procesamiento más rápido) | off |
 | `--confidence` | Nivel mínimo de confianza de detección (0.0 a 1.0) | `0.7` |
-| `--model` | Complejidad del modelo (0=lite, 1=full, 2=heavy) | `0` |
+| `--model` | Complejidad del modelo (0=lite, 1=full, 2=heavy) | `1` |
 | `--max-frames` | Límite máximo de frames a procesar | `0` (infinito) |
 | `--width` | Redimensiona / solicita el ancho (ej: `640`) para mejorar los FPS | `0` (nativo) |
-| `--panel-side` | Lado de la pantalla para el panel HUD de ángulos (`left`, `right`) | `left` |
+| `--mode` | Modo de análisis inicial (`body` o `hand`) | `body` |
 | `--output-dir` | Directorio destino para `.mp4` y `.json` | `output/` |
 
 ## Docker (Alternativa)
@@ -135,3 +135,11 @@ El sistema guarda automáticamente cada sesión registrando ángulos, estados y 
   ]
 }
 ```
+
+## Trabajo Futuro (Roadmap)
+Existen áreas de mejora y funcionalidades planeadas que se implementarán en próximas iteraciones:
+
+* **Interfaz CARDIO:** Migrar la interfaz del modo Cardiovascular (Step Test, Frecuencia Respiratoria) al nuevo motor gráfico de renderizado con Pillow.
+* **Refactorización de Interacciones:** Trasladar la lógica manual de calibración del ratón (offsets) desde el loop principal hacia un `CalibrationController` dedicado.
+* **Sistema Multi-Ventana (PyQt/PySide):** Sustituir el escalado nativo estático de OpenCV por un layout completamente responsivo utilizando Qt, permitiendo al usuario redimensionar la ventana sin perder legibilidad gráfica.
+* **Alertas Gráficas Mejoradas:** Migrar los pop-ups integrados sobre el video (como "Paciente no estabilizado") hacia el módulo `VideoOverlay` para mayor cohesión estructural.

@@ -4,17 +4,24 @@ import time
 from pathlib import Path
 import cv2
 import numpy as np
+from collections import deque
+from app.config.loader import get_framing_config, get_quality_config, get_ui_config, get_threshold
 
 from app.pose.mediapipe_impl import MediaPipePoseEstimator
 from app.pose.hand import HandDetector
 from app.biomechanics.angles import calculate_all_angles
 from app.biomechanics.hand import evaluate_biomechanics
 from app.processing.profile import CalibrationProfile
-from app.ui.overlay import draw_skeleton, create_hud
+from app.ui.video_overlay import VideoOverlay
+from app.ui.panel_renderer import PanelRenderer
+from app.ui.composer import DisplayComposer
 from app.capture.video import ThreadedCapture, FileCapture
 from app.quality.evaluator import QualityEvaluator
 from app.core.session import SessionManager
 from app.core.input import KeyboardController
+from app.core.framing_validator import FramingValidator
+from app.core.quality_tracker import QualityTracker
+from app.core.event_logger import EventLogger
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Mobility Scan")
@@ -72,8 +79,21 @@ class MobilityApp:
         self.detector = MediaPipePoseEstimator(min_detection_confidence=args.confidence, model_complexity=args.model)
         self.hand_detector = HandDetector(min_detection_confidence=args.confidence)
         
-        self.evaluator = QualityEvaluator(visibility_threshold=0.5)
+        framing_conf = get_framing_config()
+        quality_conf = get_quality_config()
+        ui_conf = get_ui_config()
+        vis_min = get_threshold("visibility_min", 0.5)
+        
+        self.evaluator = QualityEvaluator(visibility_threshold=vis_min)
         self.profile = CalibrationProfile()
+        self.framing_validator = FramingValidator(required_frames=framing_conf.get("required_consecutive_frames", 15))
+        self.framing_status = {"valid": False, "reason": "Evaluando..."}
+        self.quality_tracker = QualityTracker(window_size=quality_conf.get("window_size", 30))
+        self.event_logger = EventLogger(self.session)
+        
+        self.video_overlay = VideoOverlay()
+        self.panel_renderer = PanelRenderer(width=ui_conf.get("panel_width", 240), height=frame_h)
+        self.composer = DisplayComposer()
         
         # State
         self.active_mode = "HAND" if args.mode == "hand" else "BODY"
@@ -128,6 +148,7 @@ class MobilityApp:
     def run(self):
         prev_time = time.time()
         last_processed_ts = -1.0
+        timestamp_ms = 0
         
         try:
             while self.cap.isOpened():
@@ -137,12 +158,16 @@ class MobilityApp:
                     break
                 if actions["toggle_pause"]:
                     self.paused = not self.paused
+                    self.event_logger.log(timestamp_ms, "pause_toggled", str(self.paused))
                 if actions["toggle_panel"]:
                     self.panel_hidden = not self.panel_hidden
+                    self.event_logger.log(timestamp_ms, "panel_toggled", str(self.panel_hidden))
                 if actions["switch_mode"]:
                     self.active_mode = "HAND" if self.active_mode == "BODY" else "BODY"
+                    self.event_logger.log(timestamp_ms, "mode_switched", self.active_mode)
                 if actions["reset_calibration"] and not self.session.recording_active:
                     self.profile.reset()
+                    self.event_logger.log(timestamp_ms, "calibration_reset", "")
 
                 if self.paused:
                     continue
@@ -179,14 +204,24 @@ class MobilityApp:
                 angles = {}
                 detected = False
                 current_landmarks = []
+                
+                # Copia cruda del frame antes de que VideoOverlay lo modifique (in-place)
+                raw_frame = frame.copy()
 
                 if self.active_mode == "BODY":
                     raw_landmarks = self.detector.detect(proc_frame, timestamp_ms)
                     if raw_landmarks:
+                        self.framing_status = self.evaluator.check_framing(raw_landmarks)
+                        self.framing_validator.update(self.framing_status["valid"])
+                        self.quality_tracker.add_evaluation(self.framing_status["valid"])
+                        
                         detected = True
                         self.current_landmarks = self.profile.apply(raw_landmarks)
                         angles = calculate_all_angles(self.current_landmarks)
-                        frame = draw_skeleton(frame, self.current_landmarks, angles, self.panel_hidden)
+                        frame = self.video_overlay.draw_skeleton(frame, self.current_landmarks, angles, self.panel_hidden)
+                    else:
+                        self.framing_validator.update(False)
+                        self.quality_tracker.add_evaluation(False)
 
                 elif self.active_mode == "HAND":
                     hands = self.hand_detector.detect(proc_frame)
@@ -207,13 +242,14 @@ class MobilityApp:
                 if actions["toggle_record"]:
                     if self.session.recording_active:
                         self.session.stop_recording(timestamp_ms, self.active_mode)
+                        self.framing_validator.reset()
                     else:
                         if self.active_mode == "BODY":
-                            res = self.evaluator.check_framing(self.current_landmarks)
-                            if res["valid"]:
+                            if self.framing_validator.is_ready:
                                 self.session.start_recording(timestamp_ms, self.active_mode)
+                                self.framing_error_msg = ""
                             else:
-                                self.framing_error_msg = res["reason"]
+                                self.framing_error_msg = self.framing_status.get("reason", "Paciente no estabilizado")
                                 self.framing_error_time = time.time()
                         else:
                             self.session.start_recording(timestamp_ms, self.active_mode)
@@ -222,15 +258,11 @@ class MobilityApp:
                     self.session.start_recording(timestamp_ms, self.active_mode, override=True)
                     self.framing_error_msg = ""
 
-                # 5. Save Data
-                self.session.add_frame(frame, timestamp_ms, self.active_mode, angles)
+                # 5. Save Data (Video Crudo)
+                self.session.add_frame(raw_frame, timestamp_ms, self.active_mode, angles)
 
                 # 6. UI Render
                 frame_h, frame_w = frame.shape[:2]
-                SIDEBAR_W = 240
-                canvas = np.zeros((frame_h, frame_w + SIDEBAR_W, 3), dtype=np.uint8)
-                canvas[:, :frame_w] = frame
-                frame = canvas
 
                 session_metadata = {
                     "id": "USR-001",
@@ -240,36 +272,29 @@ class MobilityApp:
                     "timer": self.session.get_elapsed_timer()
                 }
 
-                frame = create_hud(
-                    frame, angles if self.active_mode == "BODY" else {},
-                    self.fps_display, self.frame_count,
-                    panel_hidden=self.panel_hidden,
-                    cached_ts=self.cached_ts,
-                    active_mode=self.active_mode,
-                    hand_metrics=angles if self.active_mode == "HAND" else None,
-                    session_info=session_metadata,
-                    quality_indicator=100.0 if detected else 0.0
-                )
+                quality_indicator = self.quality_tracker.get_quality_percentage()
 
-                px0 = frame_w
-                if self.session.recording_active:
-                    cv2.rectangle(frame, (px0, frame_h - 60), (px0+SIDEBAR_W, frame_h), (15, 15, 15), -1)
-                    cv2.putText(frame, "GRABANDO SESION", (px0 + 10, frame_h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1, cv2.LINE_AA)
-                    cv2.putText(frame, "[Q] Detener [P] Pausa", (px0 + 10, frame_h - 22), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
-                    
-                    if time.time() % 1.0 > 0.4:
-                        cv2.circle(frame, (px0 + 30, 95), 8, (0, 0, 255), -1)
-                        cv2.putText(frame, "REC", (px0 + 45, 101), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
-                    cv2.rectangle(frame, (px0, 0), (px0+SIDEBAR_W-1, frame_h-1), (0, 0, 255), 2)
+                if self.panel_hidden:
+                    panel_surface = np.zeros((frame_h, 0, 3), dtype=np.uint8)
                 else:
-                    cv2.rectangle(frame, (px0, frame_h - 85), (px0+SIDEBAR_W, frame_h), (15, 15, 15), -1)
-                    cv2.putText(frame, "MODO CALIBRACION", (px0 + 10, frame_h - 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
-                    cv2.putText(frame, "NO GRABANDO", (px0 + 10, frame_h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
-                    cv2.putText(frame, "[Q] Iniciar [O] Forzar", (px0 + 10, frame_h - 22), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1, cv2.LINE_AA)
+                    panel_surface = self.panel_renderer.render(
+                        angles=angles if self.active_mode == "BODY" else {},
+                        fps=self.fps_display,
+                        frame_num=self.frame_count,
+                        cached_ts=self.cached_ts,
+                        active_mode=self.active_mode,
+                        hand_metrics=angles if self.active_mode == "HAND" else None,
+                        session_info=session_metadata,
+                        quality_indicator=quality_indicator,
+                        is_recording=self.session.recording_active
+                    )
+
+                # Componer
+                frame = self.composer.compose(frame, panel_surface)
 
                 if self.framing_error_msg and (time.time() - self.framing_error_time < 3.0):
-                    cv2.rectangle(frame, (px0 - 300, frame_h - 40), (px0 - 10, frame_h - 10), (0, 0, 150), -1)
-                    cv2.putText(frame, self.framing_error_msg, (px0 - 290, frame_h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                    cv2.rectangle(frame, (frame_w - 300, frame_h - 40), (frame_w - 10, frame_h - 10), (0, 0, 150), -1)
+                    cv2.putText(frame, self.framing_error_msg, (frame_w - 290, frame_h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
                 if getattr(self, 'screenshot_time', 0.0) > 0 and (time.time() - self.screenshot_time < 1.0):
                     cv2.putText(frame, "CAPTURA GUARDADA", (frame_w // 2 - 110, frame_h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)

@@ -12,8 +12,8 @@ def _is_valid_landmark(lm: dict, min_vis: float) -> bool:
     if lm.get("visibility", 0) < min_vis:
         return False
     x, y = lm.get("x", -1), lm.get("y", -1)
-    # Margen leve por si MediaPipe devuelve coordenadas ligeramente fuera
-    if not (-0.1 <= x <= 1.1 and -0.1 <= y <= 1.1):
+    # Margen estricto (2% interno) para descartar miembros cortados por la cámara
+    if not (0.02 <= x <= 0.98 and 0.02 <= y <= 0.98):
         return False
     return True
 

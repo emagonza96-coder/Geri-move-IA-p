@@ -43,3 +43,16 @@ clinical_rom:
 thresholds:
   visibility_min: 0.5
   confidence_min: 0.7
+
+framing:
+  required_consecutive_frames: 15
+
+quality:
+  window_size: 30
+
+ui:
+  panel_width: 240
+  clock_color: [180, 180, 195]
+  
+recording:
+  save_overlay: false

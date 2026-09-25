@@ -31,3 +31,15 @@ def get_threshold(key: str, default: float) -> float:
     """Obtiene un umbral de configuración."""
     config = load_config()
     return float(config.get("thresholds", {}).get(key, default))
+
+def get_framing_config() -> Dict[str, Any]:
+    config = load_config()
+    return config.get("framing", {})
+
+def get_quality_config() -> Dict[str, Any]:
+    config = load_config()
+    return config.get("quality", {})
+
+def get_ui_config() -> Dict[str, Any]:
+    config = load_config()
+    return config.get("ui", {})

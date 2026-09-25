@@ -16,6 +16,7 @@ class SessionManager:
         
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.video_path = self.output_dir / f"sesion_{self.session_id}_{source_name}.mp4"
+        self.timestamps_path = self.output_dir / f"sesion_{self.session_id}_{source_name}_timestamps.csv"
         self.json_path = self.output_dir / f"sesion_{self.session_id}_{source_name}_data.json"
         
         self.frame_w = frame_w
@@ -34,13 +35,14 @@ class SessionManager:
             "frames": []
         }
         
-        # VideoWriter
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        self.writer = cv2.VideoWriter(
-            str(self.video_path),
-            fourcc,
-            fps_source,
-            (frame_w, frame_h),
+        # Inicializar FrameRecorder (graba video crudo y CSV)
+        from app.core.frame_recorder import FrameRecorder
+        self.recorder = FrameRecorder(
+            str(self.video_path), 
+            str(self.timestamps_path), 
+            self.fps_source, 
+            self.frame_w, 
+            self.frame_h
         )
         
         self.recording_active = False
@@ -77,9 +79,9 @@ class SessionManager:
         if not self.recording_active:
             return False
 
-        # 1. Guardar la imagen cruda
-        if self.writer:
-            self.writer.write(frame_img)
+        # 1. Guardar la imagen cruda y timestamp
+        if self.recorder:
+            self.recorder.add_frame(frame_img, timestamp_ms)
             
         # 2. Guardar métricas
         angles_clean = {}
@@ -138,8 +140,8 @@ class SessionManager:
 
     def close(self):
         """Cierra el writer y guarda el JSON. Borra basura si no se grabó nada."""
-        if self.writer:
-            self.writer.release()
+        if hasattr(self, 'recorder') and self.recorder:
+            self.recorder.close()
 
         self.session_data["metadata"]["total_frames_processed"] = self.recorded_frames
         self.session_data["summary"] = self.generate_summary()
@@ -157,6 +159,8 @@ class SessionManager:
             print("  [INFO] No se guardaron archivos (0 frames grabados).")
             if os.path.exists(self.video_path):
                 os.remove(self.video_path)
+            if os.path.exists(self.timestamps_path):
+                os.remove(self.timestamps_path)
             if os.path.exists(self.json_path):
                 os.remove(self.json_path)
         else:
