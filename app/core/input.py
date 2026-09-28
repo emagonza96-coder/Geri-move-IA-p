@@ -23,6 +23,13 @@ class KeyboardController:
             "reset_calibration": False,
             "screenshot": False,
         }
+        
+        if key == 255:
+            return actions
+
+        # Convertir mayúsculas a minúsculas
+        if 65 <= key <= 90:
+            key += 32
 
         if key == 27: # ESC
             actions["exit"] = True

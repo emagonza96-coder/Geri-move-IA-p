@@ -72,8 +72,9 @@ class MobilityApp:
         self.proc_w = args.width if args.width > 0 and args.width < frame_w else frame_w
         self.proc_h = int(frame_h * (args.width / frame_w)) if args.width > 0 and args.width < frame_w else frame_h
 
+        ui_conf = get_ui_config()
         # Modules
-        self.session = SessionManager(self.output_dir, self.source, frame_w, frame_h, fps_source, source_name)
+        self.session = SessionManager(self.output_dir, self.source, frame_w, frame_h, fps_source, source_name, panel_w=ui_conf.get("panel_width", 240))
         self.input_handler = KeyboardController()
         
         self.detector = MediaPipePoseEstimator(min_detection_confidence=args.confidence, model_complexity=args.model)
@@ -81,7 +82,6 @@ class MobilityApp:
         
         framing_conf = get_framing_config()
         quality_conf = get_quality_config()
-        ui_conf = get_ui_config()
         vis_min = get_threshold("visibility_min", 0.5)
         
         self.evaluator = QualityEvaluator(visibility_threshold=vis_min)
@@ -254,21 +254,18 @@ class MobilityApp:
                         else:
                             self.session.start_recording(timestamp_ms, self.active_mode)
                             
-                if actions["force_record"] and not self.session.recording_active:
-                    self.session.start_recording(timestamp_ms, self.active_mode, override=True)
-                    self.framing_error_msg = ""
-
-                # 5. Save Data (Video Crudo)
-                self.session.add_frame(raw_frame, timestamp_ms, self.active_mode, angles)
+                if actions["force_record"]:
+                    if self.session.recording_active:
+                        self.session.stop_recording(timestamp_ms, self.active_mode)
+                        self.framing_validator.reset()
+                    else:
+                        self.session.start_recording(timestamp_ms, self.active_mode, override=True)
+                        self.framing_error_msg = ""
 
                 # 6. UI Render
                 frame_h, frame_w = frame.shape[:2]
 
                 session_metadata = {
-                    "id": "USR-001",
-                    "task": "Evaluacion",
-                    "intent": 1,
-                    "view": "Frontal",
                     "timer": self.session.get_elapsed_timer()
                 }
 
@@ -290,7 +287,11 @@ class MobilityApp:
                     )
 
                 # Componer
-                frame = self.composer.compose(frame, panel_surface)
+                frame_skeleton = frame.copy()
+                frame = self.composer.compose(frame_skeleton, panel_surface)
+
+                # 5. Save Data (Videos crudo, esqueleto, pantalla completa)
+                self.session.add_frames(raw_frame, frame_skeleton, frame, timestamp_ms, self.active_mode, angles)
 
                 if self.framing_error_msg and (time.time() - self.framing_error_time < 3.0):
                     cv2.rectangle(frame, (frame_w - 300, frame_h - 40), (frame_w - 10, frame_h - 10), (0, 0, 150), -1)

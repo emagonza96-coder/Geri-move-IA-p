@@ -69,14 +69,11 @@ class PanelRenderer:
         draw.text((px0 + self.pad, 26), cached_ts, font=self.font_normal, fill=self._bgr_to_rgb(self.clock_color))
 
         if not session_info:
-            session_info = {"id": "Anon-1", "task": "Libre", "intent": 1, "view": "Frontal", "timer": "00:00"}
+            session_info = {"timer": "00:00"}
         
-        sid, task = session_info.get('id', 'N/A'), session_info.get('task', 'N/A')
-        intent, view = session_info.get('intent', 1), session_info.get('view', 'Frontal')
         timer = session_info.get('timer', '00:00')
         
-        draw.text((px0 + self.pad, 42), f"ID: {sid} | Tarea: {task} (#{intent})", font=self.font_small, fill=self._bgr_to_rgb((180, 180, 180)))
-        draw.text((px0 + self.pad, 56), f"Vista: {view} | Timer: {timer}", font=self.font_small, fill=self._bgr_to_rgb((180, 180, 180)))
+        draw.text((px0 + self.pad, 48), f"Timer: {timer}", font=self.font_normal, fill=self._bgr_to_rgb((200, 200, 200)))
 
         # FPS y Q
         fps_color = (80, 240, 100) if fps >= 20 else (60, 165, 255) if fps >= 10 else (60, 80, 255)

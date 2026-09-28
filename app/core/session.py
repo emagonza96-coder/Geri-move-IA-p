@@ -10,7 +10,7 @@ class SessionManager:
     Gestiona la inicialización de archivos, el log de datos estructurados (JSON), 
     la grabación en video crudo (MP4) y los eventos de la sesión.
     """
-    def __init__(self, output_dir, source, frame_w, frame_h, fps_source, source_name="webcam_0"):
+    def __init__(self, output_dir, source, frame_w, frame_h, fps_source, source_name="webcam_0", panel_w=240):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
         
@@ -42,7 +42,8 @@ class SessionManager:
             str(self.timestamps_path), 
             self.fps_source, 
             self.frame_w, 
-            self.frame_h
+            self.frame_h,
+            self.frame_w + panel_w
         )
         
         self.recording_active = False
@@ -74,14 +75,14 @@ class SessionManager:
             "context": context
         })
 
-    def add_frame(self, frame_img, timestamp_ms, mode, angles_dict):
-        """Añade el frame de video al MP4 y los datos JSON al log, SOLO si se está grabando."""
+    def add_frames(self, raw_frame, skeleton_frame, screen_frame, timestamp_ms, mode, angles_dict):
+        """Añade los frames de video al MP4 y los datos JSON al log, SOLO si se está grabando."""
         if not self.recording_active:
             return False
 
-        # 1. Guardar la imagen cruda y timestamp
+        # 1. Guardar la imagen cruda, esqueleto, pantalla y timestamp
         if self.recorder:
-            self.recorder.add_frame(frame_img, timestamp_ms)
+            self.recorder.add_frames(raw_frame, skeleton_frame, screen_frame, timestamp_ms)
             
         # 2. Guardar métricas
         angles_clean = {}
